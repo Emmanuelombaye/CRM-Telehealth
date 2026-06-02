@@ -1,0 +1,156 @@
+// ============================================================
+// TeleLaunch CRM — Prisma Schema
+// Run: npx prisma migrate dev --name init
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ── Tenant Models ────────────────────────────────────────────
+
+model Organization {
+  id               String     @id @default(cuid())
+  name             String
+  smsCredits       Int        @default(20000)
+  emailCredits     Int        @default(100000)
+  
+  // Custom API Credential Overrides for Multi-Tenant SaaS monetization
+  twilioSid        String?
+  twilioToken      String?
+  twilioPhone      String?
+  sendgridApiKey   String?
+  sendgridFrom     String?
+
+  users            User[]
+  leads            Lead[]
+  campaigns        Campaign[]
+  tasks            Task[]
+  createdAt        DateTime   @default(now())
+}
+
+model User {
+  id             String       @id // Matches Supabase Auth user ID
+  email          String       @unique
+  role           String       @default("agent") // admin | agent
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+}
+
+// ── Lead ─────────────────────────────────────────────────────
+// Core entity. Every incoming lead from any source.
+model Lead {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  phone          String
+  email          String?
+  source         String       // "meta", "website", "manual", "import"
+  status         String       @default("new") // new | contacted | qualified | closed | dead
+
+  // Optional metadata from the lead form
+  formName       String?  // Meta Lead Ad form name
+  adId           String?  // Meta ad ID that generated the lead
+  campaignId     String? // Meta campaign ID
+
+  messages       Message[]
+  activities     Activity[]
+  tasks          Task[]
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([source])
+  @@index([createdAt])
+}
+
+// ── Message ──────────────────────────────────────────────────
+// Every SMS or email sent to a lead gets logged here.
+model Message {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  type      String   // "sms" | "email"
+  content   String   @db.Text
+  subject   String?  // email subject line
+  status    String   @default("pending") // pending | sent | failed | delivered
+
+  // Provider response data
+  externalId String? // Twilio MessageSID or SendGrid message ID
+  errorCode  String? // if failed
+  errorMsg   String? // human-readable error
+
+  createdAt DateTime @default(now())
+
+  @@index([leadId])
+  @@index([type])
+  @@index([status])
+}
+
+// ── Activity ─────────────────────────────────────────────────
+// Audit trail: everything that happens to a lead.
+model Activity {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  action    String   // "lead_created" | "sms_sent" | "email_sent" | "status_changed" | "webhook_received"
+  metadata  Json?    // any extra context (old status, new status, etc.)
+
+  createdAt DateTime @default(now())
+
+  @@index([leadId])
+  @@index([action])
+}
+
+// ── Campaign ─────────────────────────────────────────────────
+// Bulk SMS/email campaigns to lead segments
+model Campaign {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  type           String       // "sms" | "email"
+  content        String       @db.Text
+  subject        String?
+  status         String       @default("draft") // draft | scheduled | running | complete
+  scheduledAt    DateTime?
+  sentCount      Int          @default(0)
+  failCount      Int          @default(0)
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([organizationId])
+}
+
+// ── Task ─────────────────────────────────────────────────────
+// Custom task checklist for lead follow-ups
+model Task {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  title          String
+  status         String       @default("pending") // pending | completed
+  dueDate        DateTime?
+  
+  leadId         String?
+  lead           Lead?        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([organizationId])
+  @@index([status])
+}
